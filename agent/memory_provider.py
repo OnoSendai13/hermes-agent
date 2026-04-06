@@ -229,3 +229,26 @@ class MemoryProvider(ABC):
 
         Use to mirror built-in memory writes to your backend.
         """
+
+    def on_tool_result(
+        self,
+        tool_name: str,
+        args_json: str,
+        result: str,
+        stored_len: int = 0,
+    ) -> str:
+        """Called after every tool execution with the raw result.
+
+        tool_name: name of the tool that was executed
+        args_json: JSON string of the tool arguments
+        result: the raw string returned by the tool
+        stored_len: length of the stored/replaced result (0 if not stored)
+
+        Return the string that should appear in the conversation as
+        the tool result. Providers can replace large results with
+        compact placeholders and store them externally.
+
+        Default implementation returns result unchanged (pass-through).
+        Override to implement tool output sandboxing.
+        """
+        return result

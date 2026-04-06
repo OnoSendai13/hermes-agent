@@ -228,6 +228,33 @@ class MemoryManager:
             )
             return json.dumps({"error": f"Memory tool '{tool_name}' failed: {e}"})
 
+    def on_tool_result(
+        self,
+        tool_name: str,
+        args_json: str,
+        result: str,
+        stored_len: int = 0,
+    ) -> str:
+        """Call on_tool_result on all providers that implement it.
+
+        Providers return the (potentially modified) result string.
+        The first non-default result is used. Providers are tried in
+        registration order; only one provider should override a given
+        tool's output to avoid conflicts.
+        """
+        default = object()
+        for provider in self._providers:
+            try:
+                modified = provider.on_tool_result(tool_name, args_json, result, stored_len=stored_len)
+                if modified is not None and modified is not default and modified != result:
+                    return modified
+            except Exception as e:
+                logger.debug(
+                    "Memory provider '%s' on_tool_result(%s) failed: %s",
+                    provider.name, tool_name, e,
+                )
+        return result
+
     # -- Lifecycle hooks -----------------------------------------------------
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:

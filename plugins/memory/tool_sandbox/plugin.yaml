@@ -1,0 +1,8 @@
+name: tool-sandbox
+version: 1.0.0
+description: "Tool output sandbox — stores large tool results in SQLite/FTS5, replaces with compact references, retrieves on-demand. Saves context tokens by keeping raw outputs external."
+pip_dependencies:
+  - aiosqlite
+hooks:
+  - on_tool_result
+  - on_pre_compress

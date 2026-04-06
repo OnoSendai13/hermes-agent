@@ -6051,6 +6051,16 @@ class AIAgent:
                 except Exception as cb_err:
                     logging.debug(f"Tool complete callback error: {cb_err}")
 
+            # Allow memory providers to intercept tool results
+            if self._memory_manager:
+                try:
+                    args_json = json.dumps(args, ensure_ascii=False)
+                    function_result = self._memory_manager.on_tool_result(
+                        name, args_json, function_result,
+                    )
+                except Exception as e:
+                    logger.debug("memory_manager.on_tool_result(%s) failed: %s", name, e)
+
             # Truncate oversized results
             MAX_TOOL_RESULT_CHARS = 100_000
             if len(function_result) > MAX_TOOL_RESULT_CHARS:
@@ -6331,6 +6341,17 @@ class AIAgent:
                     self.tool_complete_callback(tool_call.id, function_name, function_args, function_result)
                 except Exception as cb_err:
                     logging.debug(f"Tool complete callback error: {cb_err}")
+
+            # Allow memory providers to intercept and replace tool results
+            # (e.g. tool-sandbox stores large outputs externally)
+            if self._memory_manager:
+                try:
+                    args_json = json.dumps(function_args, ensure_ascii=False)
+                    function_result = self._memory_manager.on_tool_result(
+                        function_name, args_json, function_result,
+                    )
+                except Exception as e:
+                    logger.debug("memory_manager.on_tool_result(%s) failed: %s", function_name, e)
 
             # Guard against tools returning absurdly large content that would
             # blow up the context window. 100K chars ≈ 25K tokens — generous
