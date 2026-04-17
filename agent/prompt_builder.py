@@ -295,7 +295,9 @@ PLATFORM_HINTS = {
     ),
     "telegram": (
         "You are on a text messaging communication platform, Telegram. "
-        "Please do not use markdown as it does not render. "
+        "Standard markdown is automatically converted to Telegram format. "
+        "Supported: **bold**, *italic*, ~~strikethrough~~, ||spoiler||, "
+        "`inline code`, ```code blocks```, [links](url), and ## headers. "
         "You can send media files natively: to deliver a file to the user, "
         "include MEDIA:/absolute/path/to/file in your response. Images "
         "(.png, .jpg, .webp) appear as photos, audio (.ogg) sends as voice "
@@ -357,6 +359,37 @@ PLATFORM_HINTS = {
         ".heic) appear as photos and other files arrive as attachments."
     ),
 }
+
+
+# ---------------------------------------------------------------------------
+# Environment hints — execution-environment awareness for the agent.
+# Unlike PLATFORM_HINTS (which describe the messaging channel), these describe
+# the machine/OS the agent's tools actually run on.
+# ---------------------------------------------------------------------------
+
+WSL_ENVIRONMENT_HINT = (
+    "You are running inside WSL (Windows Subsystem for Linux). "
+    "The Windows host filesystem is mounted under /mnt/ — "
+    "/mnt/c/ is the C: drive, /mnt/d/ is D:, etc. "
+    "The user's Windows files are typically at "
+    "/mnt/c/Users/<username>/Desktop/, Documents/, Downloads/, etc. "
+    "When the user references Windows paths or desktop files, translate "
+    "to the /mnt/c/ equivalent. You can list /mnt/c/Users/ to discover "
+    "the Windows username if needed."
+)
+
+
+def build_environment_hints() -> str:
+    """Return environment-specific guidance for the system prompt.
+
+    Detects WSL, and can be extended for Termux, Docker, etc.
+    Returns an empty string when no special environment is detected.
+    """
+    hints: list[str] = []
+    if is_wsl():
+        hints.append(WSL_ENVIRONMENT_HINT)
+    return "\n\n".join(hints)
+
 
 CONTEXT_FILE_MAX_CHARS = 20_000
 CONTEXT_TRUNCATE_HEAD_RATIO = 0.7
