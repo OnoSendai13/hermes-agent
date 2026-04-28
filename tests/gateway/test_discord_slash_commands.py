@@ -164,7 +164,7 @@ async def test_auto_registers_missing_gateway_commands(adapter):
 
     # These commands are gateway-available but were not in the original
     # hardcoded registration list — they should be auto-registered.
-    expected_auto = {"debug", "yolo", "reload", "profile"}
+    expected_auto = {"debug", "yolo", "profile"}
     for name in expected_auto:
         assert name in tree_names, f"/{name} should be auto-registered on Discord"
 
@@ -196,6 +196,89 @@ async def test_auto_registered_command_with_args(adapter):
     await branch_cmd.callback(interaction, args="my-branch")
     adapter._run_simple_slash.assert_awaited_once_with(
         interaction, "/branch my-branch"
+    )
+
+
+@pytest.mark.asyncio
+async def test_auto_registers_plugin_commands_for_discord(adapter):
+    """Plugin slash commands should appear as native Discord app commands."""
+    adapter._run_simple_slash = AsyncMock()
+
+    with patch(
+        "hermes_cli.plugins.get_plugin_commands",
+        return_value={
+            "metricas": {
+                "handler": lambda _a: "ok",
+                "description": "Metrics dashboard",
+                "args_hint": "dias:7 formato:json",
+                "plugin": "metrics-plugin",
+            }
+        },
+    ):
+        adapter._register_slash_commands()
+
+    tree_names = set(adapter._client.tree.commands.keys())
+    assert "metricas" in tree_names
+
+    metricas_cmd = adapter._client.tree.commands["metricas"]
+    interaction = SimpleNamespace()
+    await metricas_cmd.callback(interaction, args="dias:7 formato:json")
+    adapter._run_simple_slash.assert_awaited_once_with(
+        interaction, "/metricas dias:7 formato:json"
+    )
+
+
+@pytest.mark.asyncio
+async def test_auto_registered_plugin_command_without_args_hint(adapter):
+    """Plugin commands without args_hint should register as parameterless."""
+    adapter._run_simple_slash = AsyncMock()
+
+    with patch(
+        "hermes_cli.plugins.get_plugin_commands",
+        return_value={
+            "ping": {
+                "handler": lambda _a: "pong",
+                "description": "Ping the plugin",
+                "args_hint": "",
+                "plugin": "ping-plugin",
+            }
+        },
+    ):
+        adapter._register_slash_commands()
+
+    assert "ping" in adapter._client.tree.commands
+    ping_cmd = adapter._client.tree.commands["ping"]
+    interaction = SimpleNamespace()
+    await ping_cmd.callback(interaction)
+    adapter._run_simple_slash.assert_awaited_once_with(interaction, "/ping")
+
+
+@pytest.mark.asyncio
+async def test_plugin_command_name_conflict_skipped(adapter):
+    """A plugin command that collides with a built-in must not override it."""
+    adapter._run_simple_slash = AsyncMock()
+
+    with patch(
+        "hermes_cli.plugins.get_plugin_commands",
+        return_value={
+            "status": {
+                "handler": lambda _a: "plugin-status",
+                "description": "Plugin status",
+                "args_hint": "",
+                "plugin": "shadow-plugin",
+            }
+        },
+    ):
+        adapter._register_slash_commands()
+
+    # Built-ins are registered via @tree.command as plain functions. A
+    # plugin-registered override would install a _FakeCommand instance
+    # (has .callback) via tree.add_command. If the conflict-skip logic
+    # fires, the slot remains a bare function.
+    status_entry = adapter._client.tree.commands["status"]
+    assert callable(status_entry) and not hasattr(status_entry, "callback"), (
+        "plugin registration overrode the built-in /status command — "
+        "the already_registered skip must prevent this"
     )
 
 
@@ -401,6 +484,8 @@ async def test_auto_create_thread_uses_message_content_as_name(adapter):
     message = SimpleNamespace(
         content="Hello world, how are you?",
         create_thread=AsyncMock(return_value=thread),
+        channel=SimpleNamespace(send=AsyncMock()),
+        author=SimpleNamespace(display_name="Jezza"),
     )
 
     result = await adapter._auto_create_thread(message)
@@ -413,12 +498,56 @@ async def test_auto_create_thread_uses_message_content_as_name(adapter):
 
 
 @pytest.mark.asyncio
+async def test_auto_create_thread_strips_mention_syntax_from_name(adapter):
+    """Thread names must not contain raw <@id>, <@&id>, or <#id> markers.
+
+    Regression guard for #6336 — previously a message like
+    ``<@&1490963422786093149> help`` would spawn a thread literally
+    named ``<@&1490963422786093149> help``.
+    """
+    thread = SimpleNamespace(id=999, name="help")
+    message = SimpleNamespace(
+        content="<@&1490963422786093149> <@555> please help <#123>",
+        create_thread=AsyncMock(return_value=thread),
+        channel=SimpleNamespace(send=AsyncMock()),
+        author=SimpleNamespace(display_name="Jezza"),
+    )
+
+    await adapter._auto_create_thread(message)
+
+    name = message.create_thread.await_args[1]["name"]
+    assert "<@" not in name, f"role/user mention leaked: {name!r}"
+    assert "<#" not in name, f"channel mention leaked: {name!r}"
+    assert name == "please help"
+
+
+@pytest.mark.asyncio
+async def test_auto_create_thread_falls_back_to_hermes_when_only_mentions(adapter):
+    """If a message contains only mention syntax, the stripped content is
+    empty — fall back to the 'Hermes' default rather than ''."""
+    thread = SimpleNamespace(id=999, name="Hermes")
+    message = SimpleNamespace(
+        content="<@&1490963422786093149>",
+        create_thread=AsyncMock(return_value=thread),
+        channel=SimpleNamespace(send=AsyncMock()),
+        author=SimpleNamespace(display_name="Jezza"),
+    )
+
+    await adapter._auto_create_thread(message)
+
+    name = message.create_thread.await_args[1]["name"]
+    assert name == "Hermes"
+
+
+@pytest.mark.asyncio
 async def test_auto_create_thread_truncates_long_names(adapter):
     long_text = "a" * 200
     thread = SimpleNamespace(id=999, name="truncated")
     message = SimpleNamespace(
         content=long_text,
         create_thread=AsyncMock(return_value=thread),
+        channel=SimpleNamespace(send=AsyncMock()),
+        author=SimpleNamespace(display_name="Jezza"),
     )
 
     result = await adapter._auto_create_thread(message)
@@ -430,10 +559,33 @@ async def test_auto_create_thread_truncates_long_names(adapter):
 
 
 @pytest.mark.asyncio
-async def test_auto_create_thread_returns_none_on_failure(adapter):
+async def test_auto_create_thread_falls_back_to_seed_message(adapter):
+    thread = SimpleNamespace(id=555, name="Hello")
+    seed_message = SimpleNamespace(create_thread=AsyncMock(return_value=thread))
     message = SimpleNamespace(
         content="Hello",
         create_thread=AsyncMock(side_effect=RuntimeError("no perms")),
+        channel=SimpleNamespace(send=AsyncMock(return_value=seed_message)),
+        author=SimpleNamespace(display_name="Jezza"),
+    )
+
+    result = await adapter._auto_create_thread(message)
+    assert result is thread
+    message.channel.send.assert_awaited_once_with("🧵 Thread created by Hermes: **Hello**")
+    seed_message.create_thread.assert_awaited_once_with(
+        name="Hello",
+        auto_archive_duration=1440,
+        reason="Auto-threaded from mention by Jezza",
+    )
+
+
+@pytest.mark.asyncio
+async def test_auto_create_thread_returns_none_when_direct_and_fallback_fail(adapter):
+    message = SimpleNamespace(
+        content="Hello",
+        create_thread=AsyncMock(side_effect=RuntimeError("no perms")),
+        channel=SimpleNamespace(send=AsyncMock(side_effect=RuntimeError("send failed"))),
+        author=SimpleNamespace(display_name="Jezza"),
     )
 
     result = await adapter._auto_create_thread(message)
